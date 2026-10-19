@@ -9,6 +9,7 @@ Everything here is provided. Read it, because you will debug through it.
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
@@ -63,12 +64,24 @@ class GeminiClient:
             response_mime_type="application/json",
             response_schema=schema,
         )
-        try:
-            response = self._client.models.generate_content(model=self.model_name, contents=user, config=config)
-        except genai_errors.APIError as exc:
-            raise ModelCallError(f"Gemini API error {exc.code}: {exc.message}") from exc
-        # .text is None if the reply was blocked or empty. Return "" and let validation catch it.
-        return response.text or ""
+        max_retries = 5
+        base_delay = 12.0
+        for attempt in range(max_retries + 1):
+            try:
+                response = self._client.models.generate_content(model=self.model_name, contents=user, config=config)
+                return response.text or ""
+            except genai_errors.APIError as exc:
+                if exc.code in (429, 503) and attempt < max_retries:
+                    delay = base_delay * (1.5 ** attempt)
+                    time.sleep(delay)
+                    continue
+                raise ModelCallError(f"Gemini API error {exc.code}: {exc.message}") from exc
+            except Exception as exc:
+                if attempt < max_retries:
+                    time.sleep(base_delay)
+                    continue
+                raise ModelCallError(f"Model connection error: {exc}") from exc
+        return ""
 
 
 @dataclass
